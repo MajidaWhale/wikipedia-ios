@@ -51,7 +51,7 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO \
             DEVELOPMENT_TEAM="" \
-            clean build | xcpretty
+            clean build
 
       - name: Prepare .app bundle
         run: |
