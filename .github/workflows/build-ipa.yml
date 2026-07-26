@@ -14,23 +14,22 @@ on:
           - Experimental
 
 env:
-  XCODE_VERSION: '16.4'
+  XCODE_VERSION: "26.5"
 
 jobs:
-  build:
+  build-ipa:
     name: Build IPA
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 60
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
       - name: Select Xcode
         run: |
-          sudo xcode-select -s /Applications/Xcode_${XCODE_VERSION}.app
+          sudo xcode-select -switch "/Applications/Xcode_${XCODE_VERSION}.app"
           xcodebuild -version
 
       - name: Resolve Swift Package Manager dependencies
@@ -52,7 +51,7 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO \
             DEVELOPMENT_TEAM="" \
-            clean build
+            clean build | xcpretty
 
       - name: Prepare .app bundle
         run: |
@@ -66,7 +65,7 @@ jobs:
           fi
 
       - name: Upload .app artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: Wikipedia-${{ inputs.scheme }}-Simulator
           path: output/*.app
