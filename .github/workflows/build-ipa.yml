@@ -1,0 +1,169 @@
+name: Build IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      scheme:
+        description: 'Xcode Scheme (Wikipedia, Staging, Experimental)'
+        required: true
+        default: 'Wikipedia'
+        type: choice
+        options:
+          - Wikipedia
+          - Staging
+          - Experimental
+      build_type:
+        description: 'Build Type'
+        required: true
+        default: 'debug'
+        type: choice
+        options:
+          - debug
+          - release
+
+env:
+  XCODE_VERSION: '16.0'
+
+jobs:
+  build:
+    name: Build IPA
+    runs-on: macos-15
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Select Xcode version
+        run: |
+          sudo xcode-select -s /Applications/Xcode_${XCODE_VERSION}.app
+          xcodebuild -version
+          swift --version
+
+      - name: Cache SwiftPM dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            DerivedData
+            .build
+          key: ${{ runner.os }}-spm-${{ hashFiles('**/Package.resolved') }}
+          restore-keys: |
+            ${{ runner.os }}-spm-
+
+      - name: Resolve Swift Package Manager dependencies
+        run: |
+          xcodebuild -resolvePackageDependencies \
+            -project Wikipedia.xcodeproj \
+            -scheme ${{ inputs.scheme }} \
+            -clonedSourcePackagesDirPath .build \
+            -quiet
+
+      - name: Set build number
+        run: |
+          BUILD_NUMBER=$(date +%Y%m%d%H%M)
+          echo "BUILD_NUMBER=$BUILD_NUMBER" >> $GITHUB_ENV
+
+      - name: Build for iOS Simulator (debug, no signing)
+        if: inputs.build_type == 'debug'
+        run: |
+          xcodebuild clean build \
+            -project Wikipedia.xcodeproj \
+            -scheme ${{ inputs.scheme }} \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -clonedSourcePackagesDirPath .build \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            DEVELOPMENT_TEAM="" \
+            OTHER_SWIFT_FLAGS="-D DEBUG" \
+            build \
+            | xcbeautify
+
+      - name: Build and Archive for Device (release)
+        if: inputs.build_type == 'release'
+        run: |
+          xcodebuild clean archive \
+            -project Wikipedia.xcodeproj \
+            -scheme ${{ inputs.scheme }} \
+            -sdk iphoneos \
+            -configuration Release \
+            -archivePath Wikipedia.xcarchive \
+            -clonedSourcePackagesDirPath .build \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            DEVELOPMENT_TEAM="" \
+            PROVISIONING_PROFILE_SPECIFIER="" \
+            build \
+            | xcbeautify
+
+      - name: Export unsigned IPA (release)
+        if: inputs.build_type == 'release'
+        run: |
+          mkdir -p export_plist
+          cat > export_plist/ExportOptions.plist << 'EOP'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>method</key>
+    <string>development</string>
+    <key>signingStyle</key>
+    <string>manual</string>
+    <key>signingCertificate</key>
+    <string>-</string>
+    <key>provisioningProfiles</key>
+    <dict/>
+    <key>generateAssetPackManifestBundle</key>
+    <false/>
+    <key>compileBitcode</key>
+    <false/>
+    <key>uploadSymbols</key>
+    <false/>
+</dict>
+</plist>
+EOP
+          xcodebuild -exportArchive \
+            -archivePath Wikipedia.xcarchive \
+            -exportPath output \
+            -exportOptionsPlist export_plist/ExportOptions.plist \
+            -allowProvisioningUpdates \
+            | xcbeautify || true
+
+      - name: Prepare debug artifact
+        if: inputs.build_type == 'debug'
+        run: |
+          mkdir -p output
+          # Find and copy the .app from DerivedData
+          APP_PATH=$(find DerivedData -name "*.app" -type d -path "*/Build/Products/Debug-iphonesimulator/*" | head -1)
+          if [ -n "$APP_PATH" ]; then
+            cp -r "$APP_PATH" output/
+            echo "APP_NAME=$(basename "$APP_PATH")" >> $GITHUB_ENV
+          else
+            echo "No .app found in DerivedData"
+            find DerivedData -name "*.app" -type d 2>/dev/null | head -5
+          fi
+
+      - name: Upload IPA artifact
+        if: inputs.build_type == 'release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Wikipedia-${{ inputs.scheme }}-${{ github.run_number }}.ipa
+          path: output/*.ipa
+          if-no-files-found: warn
+
+      - name: Upload .app artifact (simulator)
+        if: inputs.build_type == 'debug'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Wikipedia-${{ inputs.scheme }}-simulator
+          path: output/*.app
+          if-no-files-found: warn
+
+      - name: Clean up
+        if: always()
+        run: |
+          rm -rf Wikipedia.xcarchive output export_plist 2>/dev/null || true
